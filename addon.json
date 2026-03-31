@@ -1,0 +1,13 @@
+{
+    "title": "myCardealer",
+    "description": "simple framework for dynora vehicle custom lua",
+    "type": "servercontent",
+    "tags": [
+        "realism",
+        "roleplay"
+    ],
+    "ignore": [
+        ".git/*",
+        "README.md"
+    ]
+}
