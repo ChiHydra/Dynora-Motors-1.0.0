@@ -1,0 +1,178 @@
+--[[
+    Core Module: ULX/ULIB Permissions
+    Integrates with ULX permission system
+]]
+
+local ULXPerms = myCardealer.Module:New("permissions_ulx")
+    :ForSlot("permissions", {IsDefault = true, Version = "1.0"})
+
+-- Check if ULX is available
+function ULXPerms:IsULXAvailable()
+    return istable(ULib) and istable(Ulx)
+end
+
+-- Check if player has a specific permission
+-- ULXPerms:HasPermission(ply, "myCardealer.admin")
+function ULXPerms:HasPermission(ply, perm)
+    if not IsValid(ply) then return false end
+    
+    -- Fallback to admin check if ULX not loaded
+    if not self:IsULXAvailable() then
+        return ply:IsSuperAdmin() or (perm:find("admin") and ply:IsAdmin())
+    end
+    
+    -- Check if user has access to this command/permission
+    if ULib.ucl.query(ply, perm, true) then
+        return true
+    end
+    
+    -- Fallback to group-based check
+    local group = self:GetGroup(ply)
+    if not group then return ply:IsSuperAdmin() end
+    
+    -- Superadmins always have permission
+    if group == "superadmin" then return true end
+    
+    -- Admins have admin permissions
+    if group == "admin" and perm:find("admin") then return true end
+    
+    -- User has specific permission
+    return ULib.ucl.query(ply, perm, false)
+end
+
+-- Get player's ULX group
+function ULXPerms:GetGroup(ply)
+    if not IsValid(ply) then return nil end
+    
+    if self:IsULXAvailable() and ULib.ucl then
+        return ULib.ucl.getUserGroupID(ply)
+    end
+    
+    -- Fallback
+    if ply:IsSuperAdmin() then return "superadmin" end
+    if ply:IsAdmin() then return "admin" end
+    return "user"
+end
+
+-- Get all players with a specific permission
+function ULXPerms:GetPlayersWithPermission(perm)
+    local players = {}
+    
+    for _, ply in ipairs(player.GetAll()) do
+        if self:HasPermission(ply, perm) then
+            table.insert(players, ply)
+        end
+    end
+    
+    return players
+end
+
+-- Check if player can target another player (ULX style)
+function ULXPerms:CanTarget(ply, target)
+    if not IsValid(ply) or not IsValid(target) then return false end
+    if not self:IsULXAvailable() then
+        -- Basic fallback: superadmin > admin > user
+        local plyImm = ply:IsSuperAdmin() and 100 or (ply:IsAdmin() and 50 or 0)
+        local tgtImm = target:IsSuperAdmin() and 100 or (target:IsAdmin() and 50 or 0)
+        return plyImm > tgtImm or ply == target
+    end
+    
+    return ULib.ucl.query(ply, "ulx target", false) or ply == target
+end
+
+-- Get group color for UI
+function ULXPerms:GetGroupColor(group)
+    if not self:IsULXAvailable() then
+        if group == "superadmin" then return Color(150, 50, 50) end
+        if group == "admin" then return Color(50, 150, 50) end
+        return Color(50, 50, 150)
+    end
+    
+    local groupData = ULib.ucl.groups[group]
+    if groupData and groupData.color then
+        return groupData.color
+    end
+    
+    -- Default colors
+    local colors = {
+        superadmin = Color(150, 50, 50),
+        admin = Color(50, 150, 50),
+        operator = Color(50, 150, 150),
+        user = Color(50, 50, 150)
+    }
+    
+    return colors[group] or color_white
+end
+
+-- Get all available groups
+function ULXPerms:GetAllGroups()
+    if not self:IsULXAvailable() then
+        return {"superadmin", "admin", "user"}
+    end
+    
+    local groups = {}
+    for name, _ in pairs(ULib.ucl.groups) do
+        table.insert(groups, name)
+    end
+    
+    return groups
+end
+
+-- Initialize
+function ULXPerms:Initialize()
+    print("[permissions_ulx] Initializing ULX permissions...")
+    
+    -- Check for ULX
+    if not self:IsULXAvailable() then
+        print("[permissions_ulx] WARNING: ULX not detected, using fallback checks")
+        
+        -- Wait for ULX to load (it might load after us)
+        hook.Add("ULibLoaded", "myCardealer_ULXWait", function()
+            print("[permissions_ulx] ULX loaded, switching to full integration")
+        end)
+    else
+        print("[permissions_ulx] ULX detected, full integration active")
+    end
+    
+    -- Make available globally
+    myCardealer.HasPermission = function(ply, perm) 
+        return self:HasPermission(ply, perm) 
+    end
+    
+    myCardealer.GetUserGroup = function(ply)
+        return self:GetGroup(ply)
+    end
+    
+    -- Emit ready
+    self:Emit("Permissions:Ready", self:IsULXAvailable() and "ulx" or "fallback")
+    
+    return true
+end
+
+function ULXPerms:Shutdown()
+    print("[permissions_ulx] Permissions module disabled")
+end
+
+ULXPerms:Register()
+
+--[[
+
+Usage in other modules:
+
+-- Check permission
+if myCardealer.HasPermission(ply, "myCardealer.buy") then
+    -- Allow purchase
+end
+
+-- Get group for UI
+local group = myCardealer.GetUserGroup(ply)
+draw.SimpleText(group, "myCardealer.Body", x, y, myCardealer.UI:Color("Primary"))
+
+-- Or through the service
+local perms = self:GetCoreService("permissions")
+if perms:HasPermission(ply, "myCardealer.admin") then
+    -- Show admin buttons
+end
+
+
+]]

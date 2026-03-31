@@ -100,7 +100,7 @@ function myCardealer.Core:RegisterTier(tier, name)
         ErrorNoHalt(string.format("[myCardealer] Tier %d (%s) already loaded!\n", tier, name))
         return
     end
-    print(string.format("[myCardealer] Loading tier %d: %s", tier, name))
+    print(string.format("[myCardealer] ========== Tier %d: %s ==========", tier, name))
 end
 
 function myCardealer.Core:MarkTierLoaded(tier)
@@ -132,7 +132,7 @@ function myCardealer.Core:RegisterCoreSlot(slotName, options)
         Default = options.Default,
         Modules = {}
     }
-    print(string.format("[myCardealer] Registered slot: %s", slotName))
+    print(string.format("[myCardealer] [Slot] Registered: %s", slotName))
 end
 
 function myCardealer.Core:RegisterCoreModule(moduleData)
@@ -159,7 +159,7 @@ function myCardealer.Core:RegisterCoreModule(moduleData)
     if shouldAuto then
         moduleData.AutoEnable = true
         slot.Current = moduleData.Name
-        print(string.format("[myCardealer] Auto-selected %s for slot '%s'", 
+        print(string.format("[myCardealer] [Slot] Auto-selected '%s' for '%s'", 
             moduleData.Name, moduleData.Slot))
     else
         moduleData.AutoEnable = false
@@ -313,10 +313,8 @@ end
 function myCardealer.Core:Initialize()
     if self.Ready then return end
     
-    -- Tier 1: Core (already loaded by file loader)
     self:MarkTierLoaded(myCardealer.TIER_CORE)
     
-    -- Tier 2: Core Modules
     print("[myCardealer] Initializing core modules...")
     for name, mod in pairs(self.Modules) do
         if mod.Type == myCardealer.TIER_CORE_MODULE and mod.Data.AutoEnable then
@@ -332,7 +330,6 @@ function myCardealer.Core:Initialize()
     
     self:MarkTierLoaded(myCardealer.TIER_CORE_MODULE)
     
-    -- Tier 3: Plugins
     print("[myCardealer] Initializing plugins...")
     for name, mod in pairs(self.Modules) do
         if mod.Type == myCardealer.TIER_PLUGIN and mod.Data.AutoEnable ~= false then
@@ -344,7 +341,7 @@ function myCardealer.Core:Initialize()
     
     self.Ready = true
     self:Emit("Core:Ready")
-    print("[myCardealer] Framework ready!")
+    print("[myCardealer] ========== Framework Ready ==========")
 end
 
 function myCardealer.Core:GetCoreSlot(slotName)
@@ -596,105 +593,156 @@ function myCardealer.Module:Register()
     
     if self._coreEntry then
         local tierName = self.ModuleType == 1 and "Core" or self.ModuleType == 2 and "CoreMod" or "Plugin"
-        print(string.format("[myCardealer] [%s] '%s' registered", tierName, self.Name))
+        print(string.format("[myCardealer] [%s] Registered: %s", tierName, self.Name))
     end
     return self
 end
 
 --[[-------------------------------------------------------------------------
-    THREE-TIER FILE LOADING
+    THREE-TIER FILE LOADING WITH DETAILED LOGGING
 ---------------------------------------------------------------------------]]
 
 local loadQueue = {shared = {}, server = {}, client = {}}
+local loadStats = {shared = 0, server = 0, client = 0, total = 0}
 
-function myCardealer:AddToQueue(path, realm)
-    if realm == "shared" then table.insert(loadQueue.shared, path)
-    elseif realm == "server" and IsServer() then table.insert(loadQueue.server, path)
-    elseif realm == "client" and (IsClient() or IsServer()) then table.insert(loadQueue.client, path)
+function myCardealer:AddToQueue(path, realm, tierName)
+    if realm == "shared" then 
+        table.insert(loadQueue.shared, {path = path, tier = tierName})
+        loadStats.shared = loadStats.shared + 1
+    elseif realm == "server" and IsServer() then 
+        table.insert(loadQueue.server, {path = path, tier = tierName})
+        loadStats.server = loadStats.server + 1
+    elseif realm == "client" and (IsClient() or IsServer()) then 
+        table.insert(loadQueue.client, {path = path, tier = tierName})
+        loadStats.client = loadStats.client + 1
     end
+    loadStats.total = loadStats.total + 1
 end
 
-function myCardealer:IncludeFile(path, realm)
+function myCardealer:IncludeFile(path, realm, tierName)
     local success, err = pcall(function()
-        if realm == "client" and IsServer() then AddCSLuaFile(path)
+        if realm == "client" and IsServer() then 
+            print(string.format("[myCardealer] [AddCSLuaFile] %s", path))
+            AddCSLuaFile(path)
         elseif (realm == "shared") or (realm == "server" and IsServer()) or (realm == "client" and IsClient()) then
+            print(string.format("[myCardealer] [Include] %s", path))
             include(path)
         end
     end)
     if not success then
-        ErrorNoHalt("[myCardealer] Failed to load '" .. path .. "': " .. tostring(err) .. "\n")
+        ErrorNoHalt(string.format("[myCardealer] [ERROR] Failed to load '%s': %s\n", path, tostring(err)))
         return false
     end
     return true
 end
 
-function myCardealer:ScanDirectory(basePath, recursive)
+function myCardealer:ScanDirectory(basePath, recursive, tierName)
     local files, folders = file.Find(basePath .. "/*", "LUA")
+    
+    -- Log folder being scanned
+    if files and #files > 0 or folders and #folders > 0 then
+        print(string.format("[myCardealer] [Scan] %s/", basePath))
+    end
+    
     for _, filename in ipairs(files or {}) do
         if not string.EndsWith(filename, ".lua") then continue end
+        
         local fullPath = basePath .. "/" .. filename
         local realm = "shared"
+        
+        -- Detect realm by prefix
         if string.StartWith(filename, "sv_") then realm = "server"
         elseif string.StartWith(filename, "cl_") then realm = "client"
         elseif string.StartWith(filename, "sh_") then realm = "shared"
         end
-        self:AddToQueue(fullPath, realm)
+        
+        self:AddToQueue(fullPath, realm, tierName)
     end
+    
     if recursive then
         for _, folder in ipairs(folders or {}) do
             if not string.StartWith(folder, "_") then
-                self:ScanDirectory(basePath .. "/" .. folder, true)
+                self:ScanDirectory(basePath .. "/" .. folder, true, tierName)
+            else
+                print(string.format("[myCardealer] [Skip] Disabled: %s/", folder))
             end
         end
     end
 end
 
-function myCardealer:ExecuteQueue()
-    print("[myCardealer] Loading shared files...")
-    for _, path in ipairs(loadQueue.shared) do self:IncludeFile(path, "shared") end
+function myCardealer:ExecuteQueue(tierName)
+    local realmName = IsServer() and "Server" or "Client"
+    print(string.format("[myCardealer] [%s] Executing queue on %s...", tierName or "Unknown", realmName))
     
-    if IsServer() then
-        print("[myCardealer] Loading server files...")
-        for _, path in ipairs(loadQueue.server) do self:IncludeFile(path, "server") end
+    -- Shared files
+    if #loadQueue.shared > 0 then
+        print(string.format("[myCardealer] [%s] Loading %d shared file(s)...", tierName, #loadQueue.shared))
+        for _, item in ipairs(loadQueue.shared) do
+            self:IncludeFile(item.path, "shared", item.tier)
+        end
     end
     
-    print("[myCardealer] Loading client files...")
-    for _, path in ipairs(loadQueue.client) do self:IncludeFile(path, "client") end
+    -- Server files
+    if IsServer() and #loadQueue.server > 0 then
+        print(string.format("[myCardealer] [%s] Loading %d server file(s)...", tierName, #loadQueue.server))
+        for _, item in ipairs(loadQueue.server) do
+            self:IncludeFile(item.path, "server", item.tier)
+        end
+    end
     
+    -- Client files (include on server for AddCSLuaFile, execute on client)
+    if #loadQueue.client > 0 then
+        local action = IsServer() and "Sending" or "Loading"
+        print(string.format("[myCardealer] [%s] %s %d client file(s)...", tierName, action, #loadQueue.client))
+        for _, item in ipairs(loadQueue.client) do
+            self:IncludeFile(item.path, "client", item.tier)
+        end
+    end
+    
+    -- Clear queue for next tier
     loadQueue = {shared = {}, server = {}, client = {}}
 end
 
 function myCardealer:LoadFiles()
-    print("[myCardealer] Loading v" .. self.Version .. "...")
+    print(string.format("[myCardealer] ========================================"))
+    print(string.format("[myCardealer] Starting myCardealer v%s", self.Version))
+    print(string.format("[myCardealer] ========================================"))
     
     -- Register slots before any files load
+    print("[myCardealer] [Setup] Registering core slots...")
     self.Core:RegisterCoreSlot("database", {Required = true, Default = "database_sqlite"})
     self.Core:RegisterCoreSlot("permissions", {Required = true, Default = "permissions_default"})
     self.Core:RegisterCoreSlot("ui", {Required = false, Default = "ui_derma"})
     
     -- TIER 1: Core infrastructure (always loaded)
-    print("[myCardealer] [Tier 1] Loading core infrastructure...")
-    self:ScanDirectory("mycardealer/core", true)
-    self:ExecuteQueue()
+    self.Core:RegisterTier(1, "Core Infrastructure")
+    print("[myCardealer] Scanning mycardealer/core/...")
+    self:ScanDirectory("mycardealer/core", true, "Core")
+    self:ExecuteQueue("Tier 1")
     
     -- Mark Tier 1 loaded immediately so UI is available
-    self.Core.TierLoaded = {true, false, false}
+    self.Core.TierLoaded[1] = true
     self.Core:Emit("Core:TierLoaded", 1)
+    print("[myCardealer] [Tier 1] Core infrastructure loaded")
     
     -- TIER 2: Core modules (swappable)
-    print("[myCardealer] [Tier 2] Loading core modules...")
-    self:ScanDirectory("mycardealer/core_modules", true)
+    self.Core:RegisterTier(2, "Core Modules")
+    print("[myCardealer] Scanning mycardealer/core_modules/...")
+    self:ScanDirectory("mycardealer/core_modules", true, "CoreMod")
     
     -- TIER 3: Plugins (additive)
-    print("[myCardealer] [Tier 3] Loading plugins...")
-    self:ScanDirectory("mycardealer/plugins", true)
+    print("[myCardealer] Scanning mycardealer/plugins/...")
+    self:ScanDirectory("mycardealer/plugins", true, "Plugin")
     
     -- Execute remaining tiers
-    self:ExecuteQueue()
+    self:ExecuteQueue("Tier 2-3")
+    
+    -- Summary
+    print(string.format("[myCardealer] [Summary] Total files queued: %d", loadStats.total))
     
     self.Loaded = true
     myCardealer.Core:Initialize()
-    print("[myCardealer] Framework loaded successfully!")
+    print(string.format("[myCardealer] ========================================"))
 end
 
 --[[-------------------------------------------------------------------------
@@ -779,10 +827,11 @@ if SERVER then
         print(success and "Switched successfully" or ("Failed: " .. err))
     end)
     
-    -- REFRESH HANDLER: Coordinates client and server refresh
+    -- REFRESH HANDLER
     concommand.Add("cardealer_refresh", function(ply)
         if IsValid(ply) and not ply:IsSuperAdmin() then return end
         
+        print("[myCardealer] [Refresh] Initiated by " .. (IsValid(ply) and ply:Nick() or "Console"))
         myCardealer.Core:Emit("System:PreRefresh", ply)
         
         -- Notify all clients
@@ -791,6 +840,7 @@ if SERVER then
         
         -- Server refreshes after delay
         timer.Simple(1.5, function()
+            print("[myCardealer] [Refresh] Executing lua_refresh...")
             RunConsoleCommand("lua_refresh")
         end)
     end)
@@ -799,6 +849,7 @@ if SERVER then
     net.Receive("myCardealer.RequestRefresh", function(len, ply)
         if not ply:IsSuperAdmin() then return end
         
+        print("[myCardealer] [Refresh] Requested by client: " .. ply:Nick())
         myCardealer.Core:Emit("System:PreRefresh", ply)
         
         net.Start("myCardealer.ExecuteRefresh")
@@ -812,9 +863,8 @@ if SERVER then
 else
     -- CLIENT EXTENSIONS
     
-    -- Receive refresh command from server
     net.Receive("myCardealer.ExecuteRefresh", function()
-        notification.AddLegacy("System refreshing...", NOTIFY_GENERIC, 3)
+        notification.AddLegacy("myCardealer refreshing...", NOTIFY_GENERIC, 3)
         surface.PlaySound("buttons/button15.wav")
         
         timer.Simple(1, function()
@@ -978,31 +1028,6 @@ else
     end
     vgui.Register("myCardealer.Frame.Sidebar", PANEL_SIDEBAR, "EditablePanel")
     
-    -- UI helpers
-    function myCardealer.UI:Open(frameType, w, h, title)
-        frameType = frameType or "Base"
-        local className = frameType == "Sidebar" and "myCardealer.Frame.Sidebar" or "myCardealer.Frame"
-        
-        if self.ActiveFrame and IsValid(self.ActiveFrame) then
-            self.ActiveFrame:Remove()
-        end
-        
-        local frame = vgui.Create(className)
-        frame:SetSize(w or 600, h or 400)
-        frame:Center()
-        if title then frame:SetTitleText(title) end
-        frame:MakePopup()
-        
-        self.ActiveFrame = frame
-        return frame
-    end
-    
-    function myCardealer.UI:CloseAll()
-        if self.ActiveFrame and IsValid(self.ActiveFrame) then
-            self.ActiveFrame:Remove()
-        end
-        self.ActiveFrame = nil
-    end
     
     function myCardealer.UI:Button(parent, label, color)
         local btn = vgui.Create("DButton", parent)

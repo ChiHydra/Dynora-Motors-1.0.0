@@ -1,334 +1,333 @@
 --[[
-    myCardealer Tier 1 Core: UI Infrastructure
-    Compact single-file UI system with registered DFrames
+    myCardealer Tier 1 Core: Admin Module Manager
+    Always available for superadmins to manage and refresh system
 ]]
 
--- Create global UI table immediately
-myCardealer.UI = myCardealer.UI or {
-    Frames = {},      -- Registered frame types
-    ActiveFrames = {}, -- Currently open windows
-    Colors = {
-        Primary    = Color(157, 78, 221),
-        PrimaryDark= Color(120, 60, 180),
-        Secondary  = Color(30, 30, 30),
-        Background = Color(20, 20, 20),
-        Surface    = Color(35, 35, 35),
-        SurfaceLit = Color(45, 45, 45),
-        Text       = Color(255, 255, 255),
-        TextDim    = Color(180, 180, 180),
-        Error      = Color(220, 50, 50),
-        Success    = Color(50, 220, 50),
-        Warning    = Color(220, 180, 50)
+local Manager = myCardealer.Module:New("admin_manager")
+    :ForCore()
+    :SetConfig("ChatCommand", "!modules")
+    :SetConfig("ConsoleCommand", "cardealer_modules")
+
+function Manager:OpenUI()
+    if not IsValid(LocalPlayer()) or not LocalPlayer():IsSuperAdmin() then
+        chat.AddText(myCardealer.UI:Color("Error"), "[CarDealer] Superadmin required")
+        return
+    end
+
+    -- Close existing
+    if IsValid(self._Frame) then
+        self._Frame:Remove()
+        self._Frame = nil
+    end
+
+    -- Use registered Sidebar frame
+    local frame = myCardealer.UI:Open("Sidebar", 800, 500, "CarDealer Module Manager")
+    if not frame then
+        chat.AddText(myCardealer.UI:Color("Error"), "[CarDealer] Failed to create UI")
+        return
+    end
+    
+    self._Frame = frame
+    
+    -- Adjust sidebar width
+    if frame.Sidebar then
+        frame.Sidebar:SetWide(160)
+    end
+    
+    local content = frame:GetContent()
+    if not content then
+        print("[admin_manager] ERROR: Frame has no content panel")
+        return
+    end
+    
+    local bottom = frame:GetBottomBar()
+    
+    -- Build sidebar
+    local views = {
+        {name = "Overview", func = function() self:ShowOverview(content) end},
+        {name = "Core Modules", func = function() self:ShowCoreModules(content) end},
+        {name = "Plugins", func = function() self:ShowPlugins(content) end},
+        {name = "Slots", func = function() self:ShowSlots(content) end}
     }
-}
-
--- Register fonts
-surface.CreateFont("myCardealer.Header", {font = "Roboto", size = 20, weight = 700})
-surface.CreateFont("myCardealer.Title",  {font = "Roboto", size = 16, weight = 600})
-surface.CreateFont("myCardealer.Body",   {font = "Roboto", size = 14, weight = 400})
-surface.CreateFont("myCardealer.Small",  {font = "Roboto", size = 12, weight = 400})
-surface.CreateFont("myCardealer.Mono",   {font = "Consolas", size = 13, weight = 400})
-
--- Color helper
-function myCardealer.UI:Color(name)
-    return self.Colors[name] or color_white
-end
-
---[[-------------------------------------------------------------------------
-    REGISTERED FRAME: Base Window
----------------------------------------------------------------------------]]
-
-local PANEL_FRAME = {}
-
-function PANEL_FRAME:Init()
-    self:SetTitle("")
-    self:ShowCloseButton(false)
-    self:DockPadding(0, 28, 0, 0)
     
-    -- Title bar
-    self.TitleBar = vgui.Create("DPanel", self)
-    self.TitleBar:Dock(TOP)
-    self.TitleBar:SetTall(28)
-    self.TitleBar.Paint = function(p, w, h)
-        surface.SetDrawColor(myCardealer.UI:Color("Primary"))
-        surface.DrawRect(0, 0, w, h)
-        
-        if self._Title then
-            draw.SimpleText(self._Title, "myCardealer.Title", 10, 4, color_white)
+    if frame.AddSidebarItem then
+        for _, view in ipairs(views) do
+            frame:AddSidebarItem(view.name, view.func)
         end
     end
     
-    -- Close button
-    local close = vgui.Create("DButton", self.TitleBar)
-    close:Dock(RIGHT)
-    close:SetWide(28)
-    close:SetText("×")
-    close:SetFont("myCardealer.Header")
-    close:SetTextColor(color_white)
-    close.Paint = function() end
-    close.DoClick = function() self:Close() end
-    
-    -- Content container
-    self.Content = vgui.Create("DPanel", self)
-    self.Content:Dock(FILL)
-    self.Content:DockPadding(8, 8, 8, 8)
-    self.Content.Paint = function(p, w, h)
-        surface.SetDrawColor(myCardealer.UI:Color("Background"))
-        surface.DrawRect(0, 0, w, h)
-    end
-end
-
-function PANEL_FRAME:SetTitleText(t)
-    self._Title = t
-end
-
-function PANEL_FRAME:GetContent()
-    return self.Content
-end
-
-function PANEL_FRAME:Paint(w, h)
-    -- Shadow
-    surface.SetDrawColor(0, 0, 0, 100)
-    surface.DrawRect(4, 4, w, h)
-    -- Main
-    surface.SetDrawColor(myCardealer.UI:Color("Surface"))
-    surface.DrawRect(0, 0, w, h)
-    -- Border
-    surface.SetDrawColor(myCardealer.UI:Color("Primary"))
-    surface.DrawOutlinedRect(0, 0, w, h, 1)
-end
-
--- Register the frame type
-vgui.Register("myCardealer.Frame", PANEL_FRAME, "DFrame")
-myCardealer.UI.Frames.Base = "myCardealer.Frame"
-
---[[-------------------------------------------------------------------------
-    REGISTERED FRAME: Panel with sidebar layout
----------------------------------------------------------------------------]]
-
-local PANEL_SIDEBAR = {}
-
-function PANEL_SIDEBAR:Init()
-    self:DockPadding(0, 28, 0, 0)
-    
-    -- Title bar (simplified)
-    self.TitleBar = vgui.Create("DPanel", self)
-    self.TitleBar:Dock(TOP)
-    self.TitleBar:SetTall(28)
-    self.TitleBar.Paint = function(p, w, h)
-        surface.SetDrawColor(myCardealer.UI:Color("Primary"))
-        surface.DrawRect(0, 0, w, h)
-    end
-    
-    -- Sidebar
-    self.Sidebar = vgui.Create("DPanel", self)
-    self.Sidebar:Dock(LEFT)
-    self.Sidebar:SetWide(180)
-    self.Sidebar:DockMargin(0, 0, 0, 0)
-    self.Sidebar.Paint = function(p, w, h)
-        surface.SetDrawColor(myCardealer.UI:Color("Secondary"))
-        surface.DrawRect(0, 0, w, h)
-    end
-    
-    self.SidebarList = vgui.Create("DScrollPanel", self.Sidebar)
-    self.SidebarList:Dock(FILL)
-    self.SidebarList:DockPadding(4, 4, 4, 4)
-    self.SidebarList.VBar:SetWide(6)
-    
-    -- Main content area
-    self.MainContent = vgui.Create("DPanel", self)
-    self.MainContent:Dock(FILL)
-    self.MainContent.Paint = function(p, w, h)
-        surface.SetDrawColor(myCardealer.UI:Color("Background"))
-        surface.DrawRect(0, 0, w, h)
-    end
-    
-    -- Bottom bar
-    self.BottomBar = vgui.Create("DPanel", self)
-    self.BottomBar:Dock(BOTTOM)
-    self.BottomBar:SetTall(44)
-    self.BottomBar:DockMargin(0, 0, 0, 0)
-    self.BottomBar.Paint = function(p, w, h)
-        surface.SetDrawColor(myCardealer.UI:Color("Surface"))
-        surface.DrawRect(0, 0, w, h)
-        surface.SetDrawColor(myCardealer.UI:Color("Primary"))
-        surface.DrawRect(0, 0, w, 1)
-    end
-end
-
-function PANEL_SIDEBAR:AddSidebarItem(name, callback)
-    local btn = vgui.Create("DButton", self.SidebarList)
-    btn:Dock(TOP)
-    btn:SetTall(36)
-    btn:DockMargin(0, 0, 4, 2)
-    btn:SetText("")
-    
-    btn.Paint = function(p, w, h)
-        local col = p:IsHovered() and myCardealer.UI:Color("SurfaceLit") or myCardealer.UI:Color("Surface")
-        surface.SetDrawColor(col)
-        surface.DrawRect(0, 0, w, h)
-        
-        if p.Selected then
-            surface.SetDrawColor(myCardealer.UI:Color("Primary"))
-            surface.DrawRect(0, 0, 3, h)
+    -- Refresh button
+    if bottom and bottom:IsValid() then
+        local refresh = myCardealer.UI:Button(bottom, "Refresh Lua", myCardealer.UI:Color("Warning"))
+        refresh:Dock(RIGHT)
+        refresh:SetWide(120)
+        refresh:DockMargin(0, 6, 8, 6)
+        refresh.DoClick = function()
+            Derma_Query("Refresh all Lua files?", "Confirm", "Yes", function()
+                self:RequestRefresh()
+            end, "Cancel")
         end
         
-        draw.SimpleText(name, "myCardealer.Body", 10, 9, color_white)
-    end
-    
-    btn.DoClick = function()
-        -- Deselect all
-        for _, child in pairs(self.SidebarList:GetCanvas():GetChildren()) do
-            if child.Selected then child.Selected = false end
+        -- Close button - use Remove() since EditablePanel doesn't have Close()
+        local closeBtn = myCardealer.UI:Button(bottom, "Close")
+        closeBtn:Dock(RIGHT)
+        closeBtn:SetWide(80)
+        closeBtn:DockMargin(0, 6, 8, 6)
+        closeBtn.DoClick = function()
+            if IsValid(frame) then
+                frame:Remove()
+                self._Frame = nil
+            end
         end
-        btn.Selected = true
-        callback()
     end
     
-    return btn
+    -- Show overview by default
+    views[1].func()
 end
 
-function PANEL_SIDEBAR:GetContent()
-    return self.MainContent
+function Manager:RequestRefresh()
+    if game.SinglePlayer() or LocalPlayer():IsListenServerHost() then
+        RunConsoleCommand("cardealer_refresh")
+    else
+        net.Start("myCardealer.RequestRefresh")
+        net.SendToServer()
+        
+        if IsValid(self._Frame) then
+            self._Frame:Remove()
+            self._Frame = nil
+        end
+        
+        chat.AddText(myCardealer.UI:Color("Primary"), "[CarDealer] ", 
+            color_white, "Refresh requested from server...")
+    end
 end
 
-function PANEL_SIDEBAR:GetBottomBar()
-    return self.BottomBar
-end
-
-function PANEL_SIDEBAR:Paint(w, h)
-    surface.SetDrawColor(0, 0, 0, 100)
-    surface.DrawRect(4, 4, w, h)
-    surface.SetDrawColor(myCardealer.UI:Color("Surface"))
-    surface.DrawRect(0, 0, w, h)
-    surface.SetDrawColor(myCardealer.UI:Color("Primary"))
-    surface.DrawOutlinedRect(0, 0, w, h, 1)
-end
-
-vgui.Register("myCardealer.Frame.Sidebar", PANEL_SIDEBAR, "EditablePanel")
-myCardealer.UI.Frames.Sidebar = "myCardealer.Frame.Sidebar"
-
---[[-------------------------------------------------------------------------
-    UI HELPERS: Buttons, Lists, etc.
----------------------------------------------------------------------------]]
-
--- Create styled button (returns DButton)
-function myCardealer.UI:Button(parent, label, color)
-    local btn = vgui.Create("DButton", parent)
-    btn:SetText("")
-    btn:SetTall(32)
+function Manager:ShowOverview(parent)
+    if not IsValid(parent) then return end
+    parent:Clear()
     
-    local baseColor = color or self:Color("Primary")
-    local hoverColor = Color(
-        math.min(baseColor.r + 20, 255),
-        math.min(baseColor.g + 20, 255),
-        math.min(baseColor.b + 20, 255)
-    )
+    local title = myCardealer.UI:Label(parent, "System Overview", "myCardealer.Header")
+    title:Dock(TOP)
+    title:DockMargin(8, 8, 8, 16)
     
-    btn.Paint = function(p, w, h)
-        surface.SetDrawColor(p:IsHovered() and hoverColor or baseColor)
-        surface.DrawRect(0, 0, w, h)
-        surface.SetDrawColor(255, 255, 255, 20)
-        surface.DrawRect(0, 0, w, h/2)
-        draw.SimpleText(label, "myCardealer.Body", w/2, h/2, color_white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    -- Safely get counts
+    local coreCount = 0
+    local modCount = 0
+    local plugCount = 0
+    
+    if myCardealer.Core and myCardealer.Core.GetModulesByTier then
+        coreCount = table.Count(myCardealer.Core:GetModulesByTier(myCardealer.TIER_CORE))
+        modCount = table.Count(myCardealer.Core:GetModulesByTier(myCardealer.TIER_CORE_MODULE))
+        plugCount = table.Count(myCardealer.Core:GetModulesByTier(myCardealer.TIER_PLUGIN))
     end
     
-    return btn
-end
-
--- Create styled list
-function myCardealer.UI:List(parent)
-    local scroll = vgui.Create("DScrollPanel", parent)
-    scroll:Dock(FILL)
-    scroll.VBar:SetWide(6)
-    scroll.VBar.Paint = function(p, w, h)
-        surface.SetDrawColor(self:Color("Secondary"))
-        surface.DrawRect(0, 0, w, h)
-    end
-    scroll.VBar.btnGrip.Paint = function(p, w, h)
-        surface.SetDrawColor(self:Color("Primary"))
-        surface.DrawRect(0, 0, w, h)
-    end
-    return scroll
-end
-
--- Create list item
-function myCardealer.UI:ListItem(parent, title, subtitle, color)
-    local item = vgui.Create("DButton", parent)
-    item:Dock(TOP)
-    item:DockMargin(0, 0, 6, 2)
-    item:SetTall(48)
-    item:SetText("")
+    local stats = {
+        {"Tier 1 (Core)", "Always loaded", tostring(coreCount) .. " modules"},
+        {"Tier 2 (Modules)", "Swappable", tostring(modCount) .. " modules"},
+        {"Tier 3 (Plugins)", "Additive", tostring(plugCount) .. " modules"},
+        {"Active Slots", "Core slots", tostring(table.Count(myCardealer.Core.CoreModules or {}))}
+    }
     
-    local baseColor = self:Color("Surface")
-    local litColor = self:Color("SurfaceLit")
-    local accent = color or self:Color("Primary")
-    
-    item.Paint = function(p, w, h)
-        if p.Selected then
-            surface.SetDrawColor(Color(40, 50, 40))
+    for _, stat in ipairs(stats) do
+        local row = vgui.Create("DPanel", parent)
+        row:Dock(TOP)
+        row:SetTall(40)
+        row:DockMargin(8, 0, 8, 4)
+        row.Paint = function(p, w, h)
+            surface.SetDrawColor(myCardealer.UI:Color("Surface"))
             surface.DrawRect(0, 0, w, h)
-            surface.SetDrawColor(accent)
-            surface.DrawRect(0, 0, 3, h)
-        else
-            surface.SetDrawColor(p:IsHovered() and litColor or baseColor)
-            surface.DrawRect(0, 0, w, h)
+            draw.SimpleText(stat[1], "myCardealer.Body", 12, 4, color_white)
+            draw.SimpleText(stat[2], "myCardealer.Small", 12, 22, myCardealer.UI:Color("TextDim"))
+            draw.SimpleText(stat[3], "myCardealer.Body", w - 12, 10, color_white, TEXT_ALIGN_RIGHT)
+        end
+    end
+    
+    -- Quick actions
+    local actionsTitle = myCardealer.UI:Label(parent, "Quick Actions", "myCardealer.Title")
+    actionsTitle:Dock(TOP)
+    actionsTitle:DockMargin(8, 24, 8, 8)
+    
+    local btnRow = vgui.Create("DPanel", parent)
+    btnRow:Dock(TOP)
+    btnRow:SetTall(40)
+    btnRow:DockMargin(8, 0, 8, 0)
+    btnRow.Paint = nil
+    
+    local debugBtn = myCardealer.UI:Button(btnRow, "Print Debug")
+    debugBtn:Dock(LEFT)
+    debugBtn:SetWide(100)
+    debugBtn.DoClick = function()
+        RunConsoleCommand("cardealer_debug")
+    end
+    
+    local closeAllBtn = myCardealer.UI:Button(btnRow, "Close All UI")
+    closeAllBtn:Dock(LEFT)
+    closeAllBtn:SetWide(100)
+    closeAllBtn:DockMargin(8, 0, 0, 0)
+    closeAllBtn.DoClick = function()
+        myCardealer.UI:CloseAll()
+        self._Frame = nil
+    end
+end
+
+function Manager:ShowCoreModules(parent)
+    if not IsValid(parent) then return end
+    parent:Clear()
+    
+    local title = myCardealer.UI:Label(parent, "Core Modules", "myCardealer.Header")
+    title:Dock(TOP)
+    title:DockMargin(8, 8, 8, 4)
+    
+    local desc = myCardealer.UI:Label(parent, "Click to activate a module for its slot", "myCardealer.Small")
+    desc:Dock(TOP)
+    desc:DockMargin(8, 0, 8, 8)
+    
+    local list = myCardealer.UI:List(parent)
+    
+    if not myCardealer.Core or not myCardealer.Core.GetModulesByTier then return end
+    
+    local modules = myCardealer.Core:GetModulesByTier(myCardealer.TIER_CORE_MODULE)
+    for name, mod in SortedPairs(modules) do
+        local slot = mod.Data.Slot or "unknown"
+        local slotData = myCardealer.Core.CoreModules and myCardealer.Core.CoreModules[slot]
+        local isActive = slotData and slotData.Current == name
+        local hasOptions = slotData and table.Count(slotData.Modules or {}) > 1
+        
+        local color = isActive and myCardealer.UI:Color("Success") or 
+                      (hasOptions and myCardealer.UI:Color("Primary") or myCardealer.UI:Color("TextDim"))
+        
+        local subtitle = slot
+        if isActive then
+            subtitle = slot .. " [ACTIVE]"
+        elseif not hasOptions then
+            subtitle = slot .. " (only option)"
         end
         
-        draw.SimpleText(title, "myCardealer.Body", 10, 6, color_white)
-        if subtitle then
-            draw.SimpleText(subtitle, "myCardealer.Small", 10, 26, self:Color("TextDim"))
+        local item = myCardealer.UI:ListItem(list, name, subtitle, color)
+        
+        if not isActive and hasOptions then
+            item:SetCursor("hand")
+            item.DoClick = function()
+                RunConsoleCommand("cardealer_switch", slot, name)
+                notification.AddLegacy("Activated " .. name, NOTIFY_GENERIC, 3)
+                timer.Simple(0.3, function()
+                    if IsValid(parent) then
+                        self:ShowCoreModules(parent)
+                    end
+                end)
+            end
         end
     end
-    
-    return item
 end
 
--- Create label
-function myCardealer.UI:Label(parent, text, font)
-    local lbl = vgui.Create("DLabel", parent)
-    lbl:SetFont(font or "myCardealer.Body")
-    lbl:SetText(text)
-    lbl:SetTextColor(self:Color("Text"))
-    lbl:SizeToContents()
-    return lbl
-end
-
---[[-------------------------------------------------------------------------
-    WINDOW MANAGEMENT
----------------------------------------------------------------------------]]
-
--- Open a registered frame type
-function myCardealer.UI:Open(frameType, w, h, title)
-    frameType = frameType or "Base"
-    local className = self.Frames[frameType] or "myCardealer.Frame"
+function Manager:ShowPlugins(parent)
+    if not IsValid(parent) then return end
+    parent:Clear()
     
-    -- Close existing of same type
-    if self.ActiveFrames[frameType] and IsValid(self.ActiveFrames[frameType]) then
-        self.ActiveFrames[frameType]:Remove()
+    local title = myCardealer.UI:Label(parent, "Installed Plugins", "myCardealer.Header")
+    title:Dock(TOP)
+    title:DockMargin(8, 8, 8, 8)
+    
+    local list = myCardealer.UI:List(parent)
+    
+    if not myCardealer.Core or not myCardealer.Core.GetModulesByTier then 
+        myCardealer.UI:Label(list, "Error loading plugin data", "myCardealer.Body"):Dock(TOP):DockMargin(8, 8, 8, 8)
+        return
     end
     
-    local frame = vgui.Create(className)
-    frame:SetSize(w or 600, h or 400)
-    frame:Center()
-    if title then frame:SetTitleText(title) end
-    frame:MakePopup()
+    local plugins = myCardealer.Core:GetModulesByTier(myCardealer.TIER_PLUGIN)
     
-    self.ActiveFrames[frameType] = frame
-    return frame
-end
-
--- Close all myCardealer windows
-function myCardealer.UI:CloseAll()
-    for _, frame in pairs(self.ActiveFrames) do
-        if IsValid(frame) then frame:Remove() end
+    if table.Count(plugins) == 0 then
+        myCardealer.UI:Label(list, "No plugins installed", "myCardealer.Body"):Dock(TOP):DockMargin(8, 8, 8, 8)
+        return
     end
-    self.ActiveFrames = {}
+    
+    for name, mod in SortedPairs(plugins) do
+        local state = mod.State == 4 and "Enabled" or "Disabled"
+        local auto = mod.Data.AutoEnable ~= false and "Auto" or "Manual"
+        local stateColor = mod.State == 4 and myCardealer.UI:Color("Success") or myCardealer.UI:Color("TextDim")
+        
+        myCardealer.UI:ListItem(list, name, state .. " | " .. auto, stateColor)
+    end
 end
 
--- Mark as Tier 1 loaded
-myCardealer.Core = myCardealer.Core or {}
-myCardealer.Core.TierLoaded = myCardealer.Core.TierLoaded or {}
-myCardealer.Core.TierLoaded[1] = true
+function Manager:ShowSlots(parent)
+    if not IsValid(parent) then return end
+    parent:Clear()
+    
+    local title = myCardealer.UI:Label(parent, "Core Slots", "myCardealer.Header")
+    title:Dock(TOP)
+    title:DockMargin(8, 8, 8, 4)
+    
+    local desc = myCardealer.UI:Label(parent, "Required slots marked with *", "myCardealer.Small")
+    desc:Dock(TOP)
+    desc:DockMargin(8, 0, 8, 8)
+    
+    local list = myCardealer.UI:List(parent)
+    
+    if not myCardealer.Core or not myCardealer.Core.CoreModules then
+        myCardealer.UI:Label(list, "Error loading slot data", "myCardealer.Body"):Dock(TOP):DockMargin(8, 8, 8, 8)
+        return
+    end
+    
+    for slotName, slot in SortedPairs(myCardealer.Core.CoreModules) do
+        local current = slot.Current or "None"
+        local options = table.Count(slot.Modules or {})
+        local required = slot.Required
+        
+        local statusText = "→ " .. current
+        if not slot.Current and required then
+            statusText = statusText .. " (REQUIRED)"
+        end
+        
+        local color = slot.Current and myCardealer.UI:Color("Success") or 
+                      (required and myCardealer.UI:Color("Error") or myCardealer.UI:Color("Warning"))
+        
+        local titleText = slotName .. (required and " *" or "")
+        local subtitle = statusText .. " (" .. options .. " option" .. (options ~= 1 and "s" or "") .. ")"
+        
+        myCardealer.UI:ListItem(list, titleText, subtitle, color)
+    end
+end
 
-print("[myCardealer] Tier 1 Core UI loaded")
+-- Network: Receive refresh command from server
+net.Receive("myCardealer.ExecuteRefresh", function()
+    notification.AddLegacy("System refreshing...", NOTIFY_GENERIC, 3)
+    surface.PlaySound("buttons/button15.wav")
+    
+    timer.Simple(1, function()
+        RunConsoleCommand("lua_refresh")
+    end)
+end)
+
+-- Chat command
+hook.Add("OnPlayerChat", "myCardealer_Manager", function(ply, text)
+    if ply ~= LocalPlayer() then return end
+    
+    local cmd = Manager:GetConfig("ChatCommand")
+    if text ~= cmd then return end
+    
+    Manager:OpenUI()
+    return true
+end)
+
+-- Console command
+concommand.Add("cardealer_modules", function()
+    Manager:OpenUI()
+end)
+
+-- Bind to F6 (optional)
+hook.Add("PlayerBindPress", "myCardealer_ManagerBind", function(ply, bind, pressed)
+    if not pressed then return end
+    if bind ~= "F6" then return end
+    if not ply:IsSuperAdmin() then return end
+    Manager:OpenUI()
+    return true
+end)
+
+function Manager:Initialize()
+    print("[admin_manager] Tier 1 core loaded. Command: " .. self:GetConfig("ChatCommand"))
+    return true
+end
+
+Manager:Register()
